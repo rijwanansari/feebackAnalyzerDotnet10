@@ -1,0 +1,235 @@
+@page "/dashboard"
+@rendermode InteractiveServer
+@using FeedbackAnalyzer.Shared.Models
+@using Microsoft.AspNetCore.SignalR.Client
+@using System.Net.Http.Json
+@inject IHttpClientFactory HttpClientFactory
+@inject IConfiguration Configuration
+@inject NavigationManager Navigation
+@implements IAsyncDisposable
+
+<PageTitle>Live Dashboard</PageTitle>
+
+<div class="container-fluid mt-4">
+    <h1 class="mb-4">Real-Time Feedback Dashboard</h1>
+
+    <div class="row mb-4">
+        <div class="col-md-12">
+            <div class="card shadow">
+                <div class="card-header bg-primary text-white">
+                    <h5 class="mb-0">
+                        <i class="bi bi-graph-up"></i> Sentiment Trends
+                        @if (isConnected)
+                        {
+                            <span class="badge bg-success float-end">
+                                <i class="bi bi-circle-fill"></i> Live
+                            </span>
+                        }
+                        else
+                        {
+                            <span class="badge bg-secondary float-end">
+                                <i class="bi bi-circle-fill"></i> Connecting...
+                            </span>
+                        }
+                    </h5>
+                </div>
+                <div class="card-body">
+                    @if (sentimentTrends.Any())
+                    {
+                        <div class="row text-center">
+                            @foreach (var trend in sentimentTrends.OrderByDescending(t => t.Value))
+                            {
+                                <div class="col-md-4 mb-3">
+                                    <div class="card @GetTrendCardClass(trend.Key)">
+                                        <div class="card-body">
+                                            <h2 class="display-4">@trend.Value</h2>
+                                            <p class="lead mb-0">@trend.Key</p>
+                                        </div>
+                                    </div>
+                                </div>
+                            }
+                        </div>
+                    }
+                    else
+                    {
+                        <p class="text-muted">No sentiment data available yet.</p>
+                    }
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <div class="row">
+        <div class="col-md-12">
+            <div class="card shadow">
+                <div class="card-header bg-info text-white">
+                    <h5 class="mb-0">
+                        <i class="bi bi-chat-dots"></i> Recent Feedback
+                    </h5>
+                </div>
+                <div class="card-body">
+                    @if (feedbackList.Any())
+                    {
+                        <div class="table-responsive">
+                            <table class="table table-hover">
+                                <thead>
+                                    <tr>
+                                        <th>Time</th>
+                                        <th>Feedback</th>
+                                        <th>Category</th>
+                                        <th>Sentiment</th>
+                                        <th>Score</th>
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                    @foreach (var feedback in feedbackList.Take(20))
+                                    {
+                                        <tr class="@(feedback.Id == lastReceivedId ? "table-success" : "")">
+                                            <td class="text-nowrap">@feedback.CreatedAt.ToLocalTime().ToString("MM/dd HH:mm")</td>
+                                            <td>@(feedback.Text.Length > 100 ? feedback.Text.Substring(0, 100) + "..." : feedback.Text)</td>
+                                            <td>@(feedback.Category ?? "-")</td>
+                                            <td>
+                                                <span class="badge @GetSentimentBadgeClass(feedback.Sentiment)">
+                                                    @feedback.Sentiment
+                                                </span>
+                                            </td>
+                                            <td>@feedback.SentimentScore.ToString("P0")</td>
+                                        </tr>
+                                    }
+                                </tbody>
+                            </table>
+                        </div>
+                    }
+                    else
+                    {
+                        <p class="text-muted">No feedback received yet.</p>
+                    }
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+@code {
+    private HubConnection? hubConnection;
+    private List<Feedback> feedbackList = new();
+    private Dictionary<string, int> sentimentTrends = new();
+    private bool isConnected = false;
+    private int lastReceivedId = 0;
+
+    protected override async Task OnInitializedAsync()
+    {
+        await LoadInitialData();
+        await InitializeSignalR();
+    }
+
+    private async Task LoadInitialData()
+    {
+        try
+        {
+            var httpClient = HttpClientFactory.CreateClient("FeedbackAPI");
+            
+            // Load recent feedback
+            var feedbacks = await httpClient.GetFromJsonAsync<List<Feedback>>("/api/feedback/recent?count=50");
+            if (feedbacks != null)
+            {
+                feedbackList = feedbacks;
+            }
+
+            // Load sentiment trends
+            var trends = await httpClient.GetFromJsonAsync<Dictionary<string, int>>("/api/feedback/trends");
+            if (trends != null)
+            {
+                sentimentTrends = trends;
+            }
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"Error loading initial data: {ex.Message}");
+        }
+    }
+
+    private async Task InitializeSignalR()
+    {
+        var hubUrl = Configuration["ApiSettings:HubUrl"] ?? "https://localhost:7000/feedbackhub";
+        
+        hubConnection = new HubConnectionBuilder()
+            .WithUrl(hubUrl)
+            .WithAutomaticReconnect()
+            .Build();
+
+        hubConnection.On<Feedback>("ReceiveFeedback", (feedback) =>
+        {
+            feedbackList.Insert(0, feedback);
+            lastReceivedId = feedback.Id;
+            InvokeAsync(StateHasChanged);
+        });
+
+        hubConnection.On<Dictionary<string, int>>("ReceiveSentimentTrends", (trends) =>
+        {
+            sentimentTrends = trends;
+            InvokeAsync(StateHasChanged);
+        });
+
+        hubConnection.Reconnecting += error =>
+        {
+            isConnected = false;
+            InvokeAsync(StateHasChanged);
+            return Task.CompletedTask;
+        };
+
+        hubConnection.Reconnected += connectionId =>
+        {
+            isConnected = true;
+            InvokeAsync(StateHasChanged);
+            return Task.CompletedTask;
+        };
+
+        hubConnection.Closed += error =>
+        {
+            isConnected = false;
+            InvokeAsync(StateHasChanged);
+            return Task.CompletedTask;
+        };
+
+        try
+        {
+            await hubConnection.StartAsync();
+            isConnected = true;
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"Error connecting to SignalR hub: {ex.Message}");
+        }
+    }
+
+    private string GetSentimentBadgeClass(string sentiment)
+    {
+        return sentiment switch
+        {
+            "Positive" => "bg-success",
+            "Negative" => "bg-danger",
+            "Neutral" => "bg-secondary",
+            _ => "bg-info"
+        };
+    }
+
+    private string GetTrendCardClass(string sentiment)
+    {
+        return sentiment switch
+        {
+            "Positive" => "border-success",
+            "Negative" => "border-danger",
+            "Neutral" => "border-secondary",
+            _ => "border-info"
+        };
+    }
+
+    public async ValueTask DisposeAsync()
+    {
+        if (hubConnection is not null)
+        {
+            await hubConnection.DisposeAsync();
+        }
+    }
+}
