@@ -1,0 +1,113 @@
+@page "/submit-feedback"
+@rendermode InteractiveServer
+@using FeedbackAnalyzer.Shared.Models
+@using System.Net.Http.Json
+@inject IHttpClientFactory HttpClientFactory
+@inject IConfiguration Configuration
+
+<PageTitle>Submit Feedback</PageTitle>
+
+<div class="container mt-5">
+    <div class="row justify-content-center">
+        <div class="col-md-8">
+            <h1 class="mb-4">Submit Your Feedback</h1>
+            
+            @if (showSuccess)
+            {
+                <div class="alert alert-success alert-dismissible fade show" role="alert">
+                    <strong>Success!</strong> Your feedback has been submitted and analyzed.
+                    <br />
+                    <strong>Sentiment:</strong> @lastFeedback?.Sentiment
+                    <strong>Score:</strong> @lastFeedback?.SentimentScore.ToString("P0")
+                    <button type="button" class="btn-close" @onclick="() => showSuccess = false"></button>
+                </div>
+            }
+
+            @if (!string.IsNullOrEmpty(errorMessage))
+            {
+                <div class="alert alert-danger alert-dismissible fade show" role="alert">
+                    @errorMessage
+                    <button type="button" class="btn-close" @onclick="() => errorMessage = string.Empty"></button>
+                </div>
+            }
+
+            <div class="card shadow">
+                <div class="card-body">
+                    <EditForm Model="@feedbackRequest" OnValidSubmit="@HandleSubmit">
+                        <div class="mb-3">
+                            <label for="feedbackText" class="form-label">Your Feedback</label>
+                            <InputTextArea id="feedbackText" class="form-control" @bind-Value="feedbackRequest.Text" 
+                                          rows="6" placeholder="Share your thoughts, suggestions, or concerns..." />
+                        </div>
+                        
+                        <div class="mb-3">
+                            <label for="category" class="form-label">Category (Optional)</label>
+                            <InputText id="category" class="form-control" @bind-Value="feedbackRequest.Category" 
+                                      placeholder="e.g., Product, Service, Support" />
+                        </div>
+
+                        <div class="d-grid">
+                            <button type="submit" class="btn btn-primary btn-lg" disabled="@isSubmitting">
+                                @if (isSubmitting)
+                                {
+                                    <span class="spinner-border spinner-border-sm me-2" role="status"></span>
+                                    <span>Analyzing...</span>
+                                }
+                                else
+                                {
+                                    <span>Submit Feedback</span>
+                                }
+                            </button>
+                        </div>
+                    </EditForm>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+@code {
+    private CreateFeedbackRequest feedbackRequest = new();
+    private Feedback? lastFeedback;
+    private bool isSubmitting = false;
+    private bool showSuccess = false;
+    private string errorMessage = string.Empty;
+
+    private async Task HandleSubmit()
+    {
+        if (string.IsNullOrWhiteSpace(feedbackRequest.Text))
+        {
+            errorMessage = "Please enter your feedback text.";
+            return;
+        }
+
+        isSubmitting = true;
+        errorMessage = string.Empty;
+        showSuccess = false;
+
+        try
+        {
+            var httpClient = HttpClientFactory.CreateClient("FeedbackAPI");
+            var response = await httpClient.PostAsJsonAsync("/api/feedback", feedbackRequest);
+
+            if (response.IsSuccessStatusCode)
+            {
+                lastFeedback = await response.Content.ReadFromJsonAsync<Feedback>();
+                showSuccess = true;
+                feedbackRequest = new CreateFeedbackRequest(); // Reset form
+            }
+            else
+            {
+                errorMessage = $"Error: {response.StatusCode}. Please try again.";
+            }
+        }
+        catch (Exception ex)
+        {
+            errorMessage = $"An error occurred: {ex.Message}";
+        }
+        finally
+        {
+            isSubmitting = false;
+        }
+    }
+}
